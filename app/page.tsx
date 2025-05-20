@@ -9,68 +9,144 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Send } from "lucide-react"
-
-interface Message {
-  id: string
-  content: string
-  sender: string
-  timestamp: number
-  file?: {
-    name: string
-    type: string
-    url: string
-    size: number
-  }
-}
+import { Send, Users } from "lucide-react"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { useSSE } from "@/hooks/use-sse"
+import type { ChatMessage, ChatUser } from "@/lib/redis"
+import { useToast } from "@/hooks/use-toast"
 
 export default function ChatApp() {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [newMessage, setNewMessage] = useState("")
   const [username, setUsername] = useState("")
+  const [userId, setUserId] = useState("")
   const [isUsernameSet, setIsUsernameSet] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [users, setUsers] = useState<ChatUser[]>([])
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [isConnected, setIsConnected] = useState(false)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const { toast } = useToast()
 
-  // Simulate fetching messages from server
+  // Fetch initial messages and users
   useEffect(() => {
-    const fetchMessages = async () => {
-      // In a real app, you would fetch messages from your API
-      const initialMessages: Message[] = [
-        {
-          id: "1",
-          content: "Welcome to the chat!",
-          sender: "System",
-          timestamp: Date.now() - 60000,
-        },
-      ]
-      setMessages(initialMessages)
+    if (!isUsernameSet) return
+
+    const fetchInitialData = async () => {
+      setIsLoading(true)
+      try {
+        // Fetch messages
+        const messagesRes = await fetch("/api/messages")
+        const messagesData = await messagesRes.json()
+        if (messagesData.messages) {
+          setMessages(messagesData.messages)
+        }
+
+        // Fetch users
+        const usersRes = await fetch("/api/users")
+        const usersData = await usersRes.json()
+        if (usersData.users) {
+          setUsers(usersData.users)
+        }
+      } catch (error) {
+        console.error("Error fetching initial data:", error)
+        toast({
+          title: "Error",
+          description: "Failed to load chat data. Please try again.",
+          variant: "destructive",
+        })
+      } finally {
+        setIsLoading(false)
+      }
     }
 
-    fetchMessages()
+    fetchInitialData()
+  }, [isUsernameSet, toast])
 
-    // Set up polling for new messages
-    const interval = setInterval(() => {
-      // In a real app, you would poll for new messages
-    }, 3000)
+  // Set up SSE connection for real-time updates
+  const { connected } = useSSE("/api/sse", {
+    connected: () => {
+      setIsConnected(true)
+      console.log("Connected to SSE")
+    },
+    update: (data) => {
+      console.log("SSE update:", data)
 
-    return () => clearInterval(interval)
-  }, [])
+      if (data.type === "new-message") {
+        setMessages((prev) => [...prev, data.data])
+      } else if (data.type === "user-update") {
+        setUsers((prev) => {
+          const existingUserIndex = prev.findIndex((u) => u.id === data.data.id)
+          if (existingUserIndex >= 0) {
+            const updatedUsers = [...prev]
+            updatedUsers[existingUserIndex] = data.data
+            return updatedUsers
+          } else {
+            return [...prev, data.data]
+          }
+        })
+      } else if (data.type === "user-remove") {
+        setUsers((prev) => prev.filter((u) => u.id !== data.data.id))
+      }
+    },
+  })
+
+  // Update connection status when SSE connection changes
+  useEffect(() => {
+    setIsConnected(connected)
+  }, [connected])
 
   // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
+  // Keep user presence updated
+  useEffect(() => {
+    if (!isUsernameSet || !userId) return
+
+    // Update user presence every 30 seconds
+    const updatePresence = async () => {
+      try {
+        await fetch("/api/users", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            id: userId,
+            name: username,
+            lastSeen: Date.now(),
+          }),
+        })
+      } catch (error) {
+        console.error("Error updating presence:", error)
+      }
+    }
+
+    // Update presence immediately and then every 30 seconds
+    updatePresence()
+    const interval = setInterval(updatePresence, 30000)
+
+    // Clean up on unmount
+    return () => {
+      clearInterval(interval)
+      // Remove user when they leave
+      fetch(`/api/users?id=${userId}`, { method: "DELETE" }).catch(console.error)
+    }
+  }, [isUsernameSet, userId, username])
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newMessage.trim() && !selectedFile) return
 
-    const message: Message = {
+    const message: ChatMessage = {
       id: Date.now().toString(),
       content: newMessage,
       sender: username,
+      senderId: userId,
       timestamp: Date.now(),
+      type: "message",
     }
 
     if (selectedFile) {
@@ -85,27 +161,87 @@ export default function ChatApp() {
       }
     }
 
-    // In a real app, you would send the message to your API
-    setMessages((prev) => [...prev, message])
-    setNewMessage("")
-    setSelectedFile(null)
+    try {
+      // Optimistically update UI
+      setMessages((prev) => [...prev, message])
+      setNewMessage("")
+      setSelectedFile(null)
 
-    // Simulate receiving a response
-    setTimeout(() => {
-      const response: Message = {
-        id: (Date.now() + 1).toString(),
-        content: `Hi ${username}, thanks for your message!`,
-        sender: "ChatBot",
-        timestamp: Date.now(),
+      // Send message to server
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(message),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to send message")
       }
-      setMessages((prev) => [...prev, response])
-    }, 1000)
+    } catch (error) {
+      console.error("Error sending message:", error)
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive",
+      })
+      // Remove the optimistically added message
+      setMessages((prev) => prev.filter((m) => m.id !== message.id))
+    }
   }
 
-  const handleSetUsername = (e: React.FormEvent) => {
+  const handleSetUsername = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (username.trim()) {
+    if (!username.trim()) return
+
+    try {
+      const newUserId = `user-${Date.now()}`
+      setUserId(newUserId)
+
+      // Register user with server
+      const response = await fetch("/api/users", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: newUserId,
+          name: username,
+          lastSeen: Date.now(),
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to register user")
+      }
+
+      // Add system message that user has joined
+      const joinMessage: ChatMessage = {
+        id: Date.now().toString(),
+        content: `${username} has joined the chat`,
+        sender: "System",
+        senderId: "system",
+        timestamp: Date.now(),
+        type: "system",
+      }
+
+      await fetch("/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(joinMessage),
+      })
+
       setIsUsernameSet(true)
+    } catch (error) {
+      console.error("Error joining chat:", error)
+      toast({
+        title: "Error",
+        description: "Failed to join chat. Please try again.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -128,6 +264,16 @@ export default function ChatApp() {
     else return (bytes / 1048576).toFixed(1) + " MB"
   }
 
+  const getAvatarFallback = (name: string) => {
+    return name.slice(0, 2).toUpperCase()
+  }
+
+  const getOnlineUsers = () => {
+    // Consider users online if they've been seen in the last 2 minutes
+    const twoMinutesAgo = Date.now() - 2 * 60 * 1000
+    return users.filter((user) => user.lastSeen > twoMinutesAgo)
+  }
+
   if (!isUsernameSet) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -146,7 +292,7 @@ export default function ChatApp() {
                   className="w-full"
                 />
               </div>
-              <Button type="submit" className="w-full">
+              <Button type="submit" className="w-full" disabled={!username.trim()}>
                 Join Chat
               </Button>
             </form>
@@ -162,104 +308,144 @@ export default function ChatApp() {
       <div className="hidden md:flex w-64 flex-col border-r bg-white">
         <div className="p-4 border-b">
           <h2 className="text-xl font-bold">Chat App</h2>
+          <div className="mt-1 flex items-center">
+            <div className={`w-2 h-2 rounded-full mr-2 ${isConnected ? "bg-green-500" : "bg-red-500"}`}></div>
+            <span className="text-xs text-gray-500">{isConnected ? "Connected" : "Disconnected"}</span>
+          </div>
         </div>
         <div className="p-4">
-          <h3 className="text-sm font-medium text-gray-500">Online Users</h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-medium text-gray-500">Online Users ({getOnlineUsers().length})</h3>
+          </div>
           <div className="mt-2 space-y-2">
-            <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <span>{username} (You)</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <span>ChatBot</span>
-            </div>
+            {getOnlineUsers().map((user) => (
+              <div key={user.id} className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span>
+                  {user.name} {user.id === userId ? "(You)" : ""}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
-        <header className="flex items-center p-4 border-b bg-white">
+        <header className="flex items-center justify-between p-4 border-b bg-white">
           <div className="flex items-center space-x-2">
             <Avatar>
-              <AvatarImage src="/placeholder.svg?height=40&width=40" alt="ChatBot" />
-              <AvatarFallback>CB</AvatarFallback>
+              <AvatarImage src="/placeholder.svg?height=40&width=40" alt="Chat Room" />
+              <AvatarFallback>CR</AvatarFallback>
             </Avatar>
             <div>
-              <h2 className="font-semibold">ChatBot</h2>
-              <p className="text-xs text-gray-500">Online</p>
+              <h2 className="font-semibold">Chat Room</h2>
+              <p className="text-xs text-gray-500">{getOnlineUsers().length} online</p>
             </div>
+          </div>
+          <div className="md:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                  <Users className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled className="text-xs text-gray-500">
+                  Online Users ({getOnlineUsers().length})
+                </DropdownMenuItem>
+                {getOnlineUsers().map((user) => (
+                  <DropdownMenuItem key={user.id}>
+                    {user.name} {user.id === userId ? "(You)" : ""}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
         <ScrollArea className="flex-1 p-4">
-          <div className="space-y-4">
-            {messages.map((message) => (
-              <div key={message.id} className={`flex ${message.sender === username ? "justify-end" : "justify-start"}`}>
+          {isLoading ? (
+            <div className="flex justify-center items-center h-full">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {messages.map((message) => (
                 <div
-                  className={`max-w-[80%] rounded-lg p-3 ${
-                    message.sender === username ? "bg-blue-500 text-white" : "bg-gray-200"
-                  }`}
+                  key={message.id}
+                  className={`flex ${message.senderId === userId ? "justify-end" : "justify-start"}`}
                 >
-                  <div className="flex items-center space-x-2 mb-1">
-                    <span className="font-medium text-sm">{message.sender}</span>
-                    <span className="text-xs opacity-70">{formatTime(message.timestamp)}</span>
-                  </div>
-                  {message.content && <p className="mb-2">{message.content}</p>}
-                  {message.file && (
-                    <div className="mt-2">
-                      {message.file.type.startsWith("image/") ? (
-                        <div>
-                          <img
-                            src={message.file.url || "/placeholder.svg"}
-                            alt={message.file.name}
-                            className="rounded-md max-h-60 max-w-full object-contain mb-1"
-                          />
-                          <div className="flex items-center text-xs mt-1">
-                            <span>{message.file.name}</span>
-                            <span className="ml-2 opacity-70">({formatFileSize(message.file.size)})</span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center p-2 bg-opacity-20 bg-black rounded">
-                          <div className="mr-2">
-                            <svg
-                              width="24"
-                              height="24"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              xmlns="http://www.w3.org/2000/svg"
-                            >
-                              <path
-                                d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                  {message.type === "system" ? (
+                    <div className="bg-gray-100 text-gray-600 text-xs py-1 px-3 rounded-full mx-auto">
+                      {message.content}
+                    </div>
+                  ) : (
+                    <div
+                      className={`max-w-[80%] rounded-lg p-3 ${
+                        message.senderId === userId ? "bg-blue-500 text-white" : "bg-gray-200"
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2 mb-1">
+                        <span className="font-medium text-sm">{message.sender}</span>
+                        <span className="text-xs opacity-70">{formatTime(message.timestamp)}</span>
+                      </div>
+                      {message.content && <p className="mb-2">{message.content}</p>}
+                      {message.file && (
+                        <div className="mt-2">
+                          {message.file.type.startsWith("image/") ? (
+                            <div>
+                              <img
+                                src={message.file.url || "/placeholder.svg"}
+                                alt={message.file.name}
+                                className="rounded-md max-h-60 max-w-full object-contain mb-1"
                               />
-                              <path
-                                d="M14 2V8H20"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            </svg>
-                          </div>
-                          <div>
-                            <div className="text-sm font-medium truncate max-w-[200px]">{message.file.name}</div>
-                            <div className="text-xs opacity-70">{formatFileSize(message.file.size)}</div>
-                          </div>
+                              <div className="flex items-center text-xs mt-1">
+                                <span>{message.file.name}</span>
+                                <span className="ml-2 opacity-70">({formatFileSize(message.file.size)})</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center p-2 bg-opacity-20 bg-black rounded">
+                              <div className="mr-2">
+                                <svg
+                                  width="24"
+                                  height="24"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path
+                                    d="M14 2H6C5.46957 2 4.96086 2.21071 4.58579 2.58579C4.21071 2.96086 4 3.46957 4 4V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V8L14 2Z"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                  <path
+                                    d="M14 2V8H20"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  />
+                                </svg>
+                              </div>
+                              <div>
+                                <div className="text-sm font-medium truncate max-w-[200px]">{message.file.name}</div>
+                                <div className="text-xs opacity-70">{formatFileSize(message.file.size)}</div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
                   )}
                 </div>
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
         </ScrollArea>
 
         <Separator />
@@ -334,7 +520,7 @@ export default function ChatApp() {
                 <input id="file-upload" type="file" className="hidden" onChange={handleFileSelect} />
               </label>
             </div>
-            <Button type="submit" size="icon">
+            <Button type="submit" size="icon" disabled={(!newMessage.trim() && !selectedFile) || !isConnected}>
               <Send className="h-4 w-4" />
             </Button>
           </form>
