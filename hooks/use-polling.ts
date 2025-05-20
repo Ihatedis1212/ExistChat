@@ -1,39 +1,29 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
-import type { ChatMessage, ChatUser, Chatroom } from "@/lib/redis"
+import type { ChatMessage, ChatUser } from "@/lib/redis"
 
 interface PollingResult {
   messages: ChatMessage[]
-  usersInRoom: ChatUser[]
-  onlineUsers: ChatUser[]
-  rooms: Chatroom[]
+  users: ChatUser[]
   isPolling: boolean
   error: Error | null
   sendMessage: (message: ChatMessage) => Promise<boolean>
   updateUser: (user: ChatUser) => Promise<boolean>
 }
 
-export function usePolling(interval = 2000, roomId = "general"): PollingResult {
+export function usePolling(interval = 2000): PollingResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [usersInRoom, setUsersInRoom] = useState<ChatUser[]>([])
-  const [onlineUsers, setOnlineUsers] = useState<ChatUser[]>([])
-  const [rooms, setRooms] = useState<Chatroom[]>([])
+  const [users, setUsers] = useState<ChatUser[]>([])
   const [isPolling, setIsPolling] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const lastPollTimestamp = useRef<number>(0)
   const pollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const currentRoomId = useRef<string>(roomId)
-
-  // Update the current room ID when it changes
-  useEffect(() => {
-    currentRoomId.current = roomId
-  }, [roomId])
 
   const pollForUpdates = useCallback(async () => {
     try {
       setIsPolling(true)
-      const response = await fetch(`/api/poll?since=${lastPollTimestamp.current}&roomId=${currentRoomId.current}`)
+      const response = await fetch(`/api/poll?since=${lastPollTimestamp.current}`)
 
       if (!response.ok) {
         throw new Error(`Polling failed with status: ${response.status}`)
@@ -41,23 +31,12 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
 
       const data = await response.json()
 
-      if (data.messages && Array.isArray(data.messages)) {
+      if (data.messages) {
         setMessages(data.messages)
       }
 
-      if (data.usersInRoom && Array.isArray(data.usersInRoom)) {
-        setUsersInRoom(data.usersInRoom)
-      }
-
-      if (data.onlineUsers && Array.isArray(data.onlineUsers)) {
-        setOnlineUsers(data.onlineUsers)
-      } else if (data.users && Array.isArray(data.users)) {
-        // Backward compatibility
-        setOnlineUsers(data.users)
-      }
-
-      if (data.rooms && Array.isArray(data.rooms)) {
-        setRooms(data.rooms)
+      if (data.users) {
+        setUsers(data.users)
       }
 
       if (data.timestamp) {
@@ -94,12 +73,6 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
   // Function to send a message
   const sendMessage = async (message: ChatMessage): Promise<boolean> => {
     try {
-      // Make sure the message has the current room ID
-      const messageWithRoom = {
-        ...message,
-        roomId: currentRoomId.current,
-      }
-
       const response = await fetch("/api/poll", {
         method: "POST",
         headers: {
@@ -107,7 +80,7 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
         },
         body: JSON.stringify({
           type: "message",
-          data: messageWithRoom,
+          data: message,
         }),
       })
 
@@ -127,12 +100,6 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
   // Function to update user presence
   const updateUser = async (user: ChatUser): Promise<boolean> => {
     try {
-      // Make sure the user has the current room ID if not specified
-      const userWithRoom = {
-        ...user,
-        currentRoomId: user.currentRoomId || currentRoomId.current,
-      }
-
       const response = await fetch("/api/poll", {
         method: "POST",
         headers: {
@@ -140,7 +107,7 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
         },
         body: JSON.stringify({
           type: "user",
-          data: userWithRoom,
+          data: user,
         }),
       })
 
@@ -155,14 +122,5 @@ export function usePolling(interval = 2000, roomId = "general"): PollingResult {
     }
   }
 
-  return {
-    messages,
-    usersInRoom,
-    onlineUsers,
-    rooms,
-    isPolling,
-    error,
-    sendMessage,
-    updateUser,
-  }
+  return { messages, users, isPolling, error, sendMessage, updateUser }
 }
