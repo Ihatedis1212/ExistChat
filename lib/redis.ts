@@ -30,47 +30,51 @@ export interface ChatUser {
 const MESSAGES_KEY = "chat:messages"
 const USERS_KEY = "chat:users"
 
-// Get all messages
+// Get all messages (only from the last hour)
 export async function getMessages(): Promise<ChatMessage[]> {
   try {
     const messages = await redis.lrange(MESSAGES_KEY, 0, -1)
+    const oneHourAgo = Date.now() - 60 * 60 * 1000 // 1 hour in milliseconds
 
-    // Safely parse each message
-    return messages.map((msg) => {
-      // If it's already an object, return it directly
-      if (typeof msg === "object" && msg !== null) {
-        return msg as ChatMessage
-      }
-
-      // Otherwise, try to parse it as JSON
-      try {
-        return JSON.parse(msg as string) as ChatMessage
-      } catch (e) {
-        console.error("Error parsing message:", e, msg)
-        // Return a default message if parsing fails
-        return {
-          id: "error",
-          content: "Error loading message",
-          sender: "System",
-          senderId: "system",
-          timestamp: Date.now(),
-          type: "system",
+    // Safely parse each message and filter out old ones
+    return messages
+      .map((msg) => {
+        // If it's already an object, return it directly
+        if (typeof msg === "object" && msg !== null) {
+          return msg as ChatMessage
         }
-      }
-    })
+
+        // Otherwise, try to parse it as JSON
+        try {
+          return JSON.parse(msg as string) as ChatMessage
+        } catch (e) {
+          console.error("Error parsing message:", e, msg)
+          // Return a default message if parsing fails
+          return {
+            id: "error",
+            content: "Error loading message",
+            sender: "System",
+            senderId: "system",
+            timestamp: Date.now(),
+            type: "system",
+          }
+        }
+      })
+      .filter((msg) => msg.timestamp >= oneHourAgo) // Only keep messages from the last hour
   } catch (error) {
     console.error("Error fetching messages:", error)
     return []
   }
 }
 
-// Add a new message
+// Change the addMessage function to use rpush instead of lpush
 export async function addMessage(message: ChatMessage): Promise<boolean> {
   try {
     // Ensure message is a string before pushing to Redis
     const messageString = typeof message === "string" ? message : JSON.stringify(message)
 
-    await redis.lpush(MESSAGES_KEY, messageString)
+    // Use rpush to add messages to the end of the list (newest at the bottom)
+    await redis.rpush(MESSAGES_KEY, messageString)
 
     // Publish the message to the channel for real-time updates
     await redis.publish(
@@ -84,6 +88,49 @@ export async function addMessage(message: ChatMessage): Promise<boolean> {
   } catch (error) {
     console.error("Error adding message:", error)
     return false
+  }
+}
+
+// Update deleteOldMessages to work with the new message order
+export async function deleteOldMessages(): Promise<number> {
+  try {
+    const messages = await redis.lrange(MESSAGES_KEY, 0, -1)
+    const oneHourAgo = Date.now() - 60 * 60 * 1000 // 1 hour in milliseconds
+    let deletedCount = 0
+
+    // Find messages older than 1 hour
+    const messagesToDelete = messages
+      .map((msg, index) => {
+        try {
+          const parsedMsg = typeof msg === "object" ? msg : JSON.parse(msg as string)
+          return { index, timestamp: parsedMsg.timestamp }
+        } catch (e) {
+          console.error("Error parsing message for deletion:", e)
+          return { index, timestamp: Date.now() } // Default to current time if parsing fails
+        }
+      })
+      .filter((msg) => msg.timestamp < oneHourAgo)
+
+    // Delete old messages one by one
+    for (const msg of messagesToDelete) {
+      try {
+        // Get the message at the index
+        const messageAtIndex = await redis.lindex(MESSAGES_KEY, msg.index)
+        if (messageAtIndex) {
+          // Remove the message from the list
+          await redis.lrem(MESSAGES_KEY, 1, messageAtIndex)
+          deletedCount++
+        }
+      } catch (e) {
+        console.error("Error deleting message:", e)
+      }
+    }
+
+    console.log(`Deleted ${deletedCount} old messages`)
+    return deletedCount
+  } catch (error) {
+    console.error("Error deleting old messages:", error)
+    return 0
   }
 }
 

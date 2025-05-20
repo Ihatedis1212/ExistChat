@@ -9,7 +9,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Send, Users, Wifi, WifiOff } from "lucide-react"
+import { Send, Users, Wifi, WifiOff, Clock } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { usePolling } from "@/hooks/use-polling"
 import type { ChatMessage } from "@/lib/redis"
@@ -197,6 +197,24 @@ export default function ChatApp() {
     return updatedMessages
   }
 
+  // Calculate when messages will expire
+  const getExpiryTime = (timestamp: number) => {
+    const expiryTime = timestamp + 60 * 60 * 1000 // 1 hour after the message was sent
+    const now = Date.now()
+    const timeLeft = expiryTime - now
+
+    if (timeLeft <= 0) {
+      return "Expiring soon"
+    }
+
+    const minutesLeft = Math.floor(timeLeft / (60 * 1000))
+    if (minutesLeft < 60) {
+      return `Expires in ${minutesLeft} min`
+    }
+
+    return `Expires in 1 hour`
+  }
+
   if (!isUsernameSet) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -214,6 +232,10 @@ export default function ChatApp() {
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full"
                 />
+              </div>
+              <div className="text-xs text-gray-500 text-center">
+                <Clock className="inline-block h-3 w-3 mr-1" />
+                Messages in this chat expire after 1 hour
               </div>
               <Button type="submit" className="w-full" disabled={!username.trim() || isLoading}>
                 {isLoading ? (
@@ -252,6 +274,9 @@ export default function ChatApp() {
               )}
             </span>
           </div>
+          <div className="mt-1 text-xs text-gray-500 flex items-center">
+            <Clock className="h-3 w-3 mr-1" /> Messages expire after 1 hour
+          </div>
         </div>
         <div className="p-4">
           <div className="flex items-center justify-between mb-2">
@@ -283,24 +308,29 @@ export default function ChatApp() {
               <p className="text-xs text-gray-500">{getOnlineUsers().length} online</p>
             </div>
           </div>
-          <div className="md:hidden">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                  <Users className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem disabled className="text-xs text-gray-500">
-                  Online Users ({getOnlineUsers().length})
-                </DropdownMenuItem>
-                {getOnlineUsers().map((user) => (
-                  <DropdownMenuItem key={user.id}>
-                    {user.name} {user.id === userId ? "(You)" : ""}
+          <div className="flex items-center">
+            <div className="text-xs text-gray-500 mr-4 hidden sm:flex items-center">
+              <Clock className="h-3 w-3 mr-1" /> Messages expire after 1 hour
+            </div>
+            <div className="md:hidden">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                    <Users className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem disabled className="text-xs text-gray-500">
+                    Online Users ({getOnlineUsers().length})
                   </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  {getOnlineUsers().map((user) => (
+                    <DropdownMenuItem key={user.id}>
+                      {user.name} {user.id === userId ? "(You)" : ""}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </header>
 
@@ -311,6 +341,16 @@ export default function ChatApp() {
             </div>
           ) : (
             <div className="space-y-4">
+              {messages.length === 0 && (
+                <div className="text-center text-gray-500 py-8">
+                  <div className="mb-2">No messages yet</div>
+                  <div className="text-xs">Be the first to send a message!</div>
+                  <div className="text-xs mt-1">
+                    <Clock className="inline-block h-3 w-3 mr-1" />
+                    Messages expire after 1 hour
+                  </div>
+                </div>
+              )}
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -326,9 +366,18 @@ export default function ChatApp() {
                         message.senderId === userId ? "bg-blue-500 text-white" : "bg-gray-200"
                       }`}
                     >
-                      <div className="flex items-center space-x-2 mb-1">
+                      <div className="flex items-center justify-between mb-1">
                         <span className="font-medium text-sm">{message.sender}</span>
-                        <span className="text-xs opacity-70">{formatTime(message.timestamp)}</span>
+                        <div className="flex items-center">
+                          <span className="text-xs opacity-70 mr-1">{formatTime(message.timestamp)}</span>
+                          <span
+                            className={`text-xs ${
+                              message.senderId === userId ? "text-blue-200" : "text-gray-500"
+                            } hidden sm:inline-block`}
+                          >
+                            • {getExpiryTime(message.timestamp)}
+                          </span>
+                        </div>
                       </div>
                       {message.content && <p className="mb-2">{message.content}</p>}
                       {message.file && (

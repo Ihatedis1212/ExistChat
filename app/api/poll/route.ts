@@ -1,5 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMessages, getUsers, addMessage, updateUser, type ChatMessage } from "@/lib/redis"
+import { getMessages, getUsers, addMessage, updateUser, deleteOldMessages, type ChatMessage } from "@/lib/redis"
+
+// Track when we last cleaned up old messages
+let lastCleanupTime = 0
+const CLEANUP_INTERVAL = 5 * 60 * 1000 // Clean up every 5 minutes
 
 // Enhanced polling endpoint that handles all operations
 export async function GET(request: NextRequest) {
@@ -7,6 +11,18 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const since = searchParams.get("since") || "0"
     const sinceTimestamp = Number.parseInt(since, 10)
+
+    // Periodically clean up old messages
+    const now = Date.now()
+    if (now - lastCleanupTime > CLEANUP_INTERVAL) {
+      console.log("Cleaning up old messages...")
+      try {
+        await deleteOldMessages()
+        lastCleanupTime = now
+      } catch (error) {
+        console.error("Error during message cleanup:", error)
+      }
+    }
 
     // Fetch messages and handle potential errors
     let messages = []
