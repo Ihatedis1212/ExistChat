@@ -1,11 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { addMessage, getMessages } from "@/lib/redis"
 
-// GET handler to fetch all messages
-export async function GET() {
+// GET handler to fetch messages for a specific room
+export async function GET(request: NextRequest) {
   try {
-    const messages = await getMessages()
-    return NextResponse.json({ messages })
+    const { searchParams } = new URL(request.url)
+    const roomId = searchParams.get("roomId")
+
+    if (!roomId) {
+      return NextResponse.json({ error: "Room ID is required" }, { status: 400 })
+    }
+
+    const messages = await getMessages(roomId)
+    return NextResponse.json({
+      messages,
+      timestamp: Date.now(),
+    })
   } catch (error) {
     console.error("Error fetching messages:", error)
     return NextResponse.json({ error: "Failed to fetch messages" }, { status: 500 })
@@ -24,6 +34,10 @@ export async function POST(request: NextRequest) {
 
     if (!message.sender || !message.senderId) {
       return NextResponse.json({ error: "Message must have a sender" }, { status: 400 })
+    }
+
+    if (!message.roomId) {
+      return NextResponse.json({ error: "Message must have a room ID" }, { status: 400 })
     }
 
     // Add timestamp if not provided

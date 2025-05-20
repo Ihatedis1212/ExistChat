@@ -1,9 +1,22 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getMessages, getUsers, addMessage, updateUser, deleteOldMessages, type ChatMessage } from "@/lib/redis"
+import {
+  getMessages,
+  getUsers,
+  getUsersInRoom,
+  addMessage,
+  updateUser,
+  deleteAllOldMessages,
+  getChatrooms,
+  initializeDefaultRoom,
+  type ChatMessage,
+} from "@/lib/redis"
 
 // Track when we last cleaned up old messages
 let lastCleanupTime = 0
 const CLEANUP_INTERVAL = 5 * 60 * 1000 // Clean up every 5 minutes
+
+// Initialize default room when the server starts
+initializeDefaultRoom().catch(console.error)
 
 // Enhanced polling endpoint that handles all operations
 export async function GET(request: NextRequest) {
@@ -11,40 +24,59 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const since = searchParams.get("since") || "0"
     const sinceTimestamp = Number.parseInt(since, 10)
+    const roomId = searchParams.get("roomId") || "general"
 
     // Periodically clean up old messages
     const now = Date.now()
     if (now - lastCleanupTime > CLEANUP_INTERVAL) {
       console.log("Cleaning up old messages...")
       try {
-        await deleteOldMessages()
+        await deleteAllOldMessages()
         lastCleanupTime = now
       } catch (error) {
         console.error("Error during message cleanup:", error)
       }
     }
 
-    // Fetch messages and handle potential errors
+    // Fetch messages for the specified room
     let messages = []
     try {
-      messages = await getMessages()
+      messages = await getMessages(roomId)
     } catch (error) {
-      console.error("Error fetching messages:", error)
+      console.error(`Error fetching messages for room ${roomId}:`, error)
       messages = []
     }
 
-    // Fetch users and handle potential errors
-    let users = []
+    // Fetch users in the specified room
+    let usersInRoom = []
     try {
-      users = await getUsers()
+      usersInRoom = await getUsersInRoom(roomId)
     } catch (error) {
-      console.error("Error fetching users:", error)
-      users = []
+      console.error(`Error fetching users in room ${roomId}:`, error)
+      usersInRoom = []
+    }
+
+    // Fetch all users
+    let allUsers = []
+    try {
+      allUsers = await getUsers()
+    } catch (error) {
+      console.error("Error fetching all users:", error)
+      allUsers = []
+    }
+
+    // Fetch all rooms
+    let rooms = []
+    try {
+      rooms = await getChatrooms()
+    } catch (error) {
+      console.error("Error fetching rooms:", error)
+      rooms = []
     }
 
     // Filter users who were active in the last 2 minutes
     const twoMinutesAgo = Date.now() - 2 * 60 * 1000
-    const onlineUsers = users.filter((user) => user.lastSeen > twoMinutesAgo)
+    const onlineUsers = allUsers.filter((user) => user.lastSeen > twoMinutesAgo)
 
     // Filter messages that are newer than the since timestamp
     const newMessages = messages.filter((msg) => msg.timestamp > sinceTimestamp)
@@ -52,7 +84,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       messages: messages,
       newMessages: newMessages,
-      users: onlineUsers,
+      usersInRoom: usersInRoom,
+      onlineUsers: onlineUsers,
+      rooms: rooms,
       timestamp: Date.now(),
     })
   } catch (error) {
@@ -61,7 +95,9 @@ export async function GET(request: NextRequest) {
       {
         error: "Failed to fetch updates",
         messages: [],
-        users: [],
+        usersInRoom: [],
+        onlineUsers: [],
+        rooms: [],
         timestamp: Date.now(),
       },
       { status: 200 },
@@ -99,6 +135,11 @@ export async function POST(request: NextRequest) {
       // Set message type if not provided
       if (!message.type) {
         message.type = "message"
+      }
+
+      // Set roomId if not provided
+      if (!message.roomId) {
+        message.roomId = "general"
       }
 
       const success = await addMessage(message)
