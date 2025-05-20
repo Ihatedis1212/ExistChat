@@ -34,7 +34,30 @@ const USERS_KEY = "chat:users"
 export async function getMessages(): Promise<ChatMessage[]> {
   try {
     const messages = await redis.lrange(MESSAGES_KEY, 0, -1)
-    return messages.map((msg) => JSON.parse(msg)) as ChatMessage[]
+
+    // Safely parse each message
+    return messages.map((msg) => {
+      // If it's already an object, return it directly
+      if (typeof msg === "object" && msg !== null) {
+        return msg as ChatMessage
+      }
+
+      // Otherwise, try to parse it as JSON
+      try {
+        return JSON.parse(msg as string) as ChatMessage
+      } catch (e) {
+        console.error("Error parsing message:", e, msg)
+        // Return a default message if parsing fails
+        return {
+          id: "error",
+          content: "Error loading message",
+          sender: "System",
+          senderId: "system",
+          timestamp: Date.now(),
+          type: "system",
+        }
+      }
+    })
   } catch (error) {
     console.error("Error fetching messages:", error)
     return []
@@ -44,7 +67,11 @@ export async function getMessages(): Promise<ChatMessage[]> {
 // Add a new message
 export async function addMessage(message: ChatMessage): Promise<boolean> {
   try {
-    await redis.lpush(MESSAGES_KEY, JSON.stringify(message))
+    // Ensure message is a string before pushing to Redis
+    const messageString = typeof message === "string" ? message : JSON.stringify(message)
+
+    await redis.lpush(MESSAGES_KEY, messageString)
+
     // Publish the message to the channel for real-time updates
     await redis.publish(
       "chat:updates",
@@ -64,12 +91,34 @@ export async function addMessage(message: ChatMessage): Promise<boolean> {
 export async function getUsers(): Promise<ChatUser[]> {
   try {
     const users = await redis.hgetall(USERS_KEY)
+
+    if (!users) return []
+
     return Object.entries(users).map(([id, userData]) => {
-      const user = JSON.parse(userData as string)
-      return {
-        id,
-        name: user.name,
-        lastSeen: user.lastSeen,
+      // Handle case where userData might be an object already
+      if (typeof userData === "object" && userData !== null) {
+        return {
+          id,
+          name: (userData as any).name || "Unknown",
+          lastSeen: (userData as any).lastSeen || Date.now(),
+        }
+      }
+
+      // Otherwise parse as JSON
+      try {
+        const user = JSON.parse(userData as string)
+        return {
+          id,
+          name: user.name,
+          lastSeen: user.lastSeen,
+        }
+      } catch (e) {
+        console.error("Error parsing user data:", e, userData)
+        return {
+          id,
+          name: "Unknown",
+          lastSeen: Date.now(),
+        }
       }
     })
   } catch (error) {
@@ -81,12 +130,19 @@ export async function getUsers(): Promise<ChatUser[]> {
 // Add or update a user
 export async function updateUser(user: ChatUser): Promise<boolean> {
   try {
+    // Ensure user data is a string before storing in Redis
+    const userData =
+      typeof user === "object"
+        ? JSON.stringify({
+            name: user.name,
+            lastSeen: user.lastSeen,
+          })
+        : user
+
     await redis.hset(USERS_KEY, {
-      [user.id]: JSON.stringify({
-        name: user.name,
-        lastSeen: user.lastSeen,
-      }),
+      [user.id]: userData,
     })
+
     // Publish the user update to the channel
     await redis.publish(
       "chat:updates",
@@ -134,12 +190,5 @@ export async function cleanupUsers(maxAgeMs: number = 5 * 60 * 1000): Promise<vo
     }
   } catch (error) {
     console.error("Error cleaning up users:", error)
-  }
-}
-
-export async function subscribeToChannel(channelId: string, callback: (message: any) => void) {
-  // In a real app, you would subscribe to a Redis channel
-  return () => {
-    // Unsubscribe function
   }
 }

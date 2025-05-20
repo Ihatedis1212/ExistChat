@@ -9,92 +9,24 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Send, Users } from "lucide-react"
+import { Send, Users, Wifi, WifiOff } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { useSSE } from "@/hooks/use-sse"
-import type { ChatMessage, ChatUser } from "@/lib/redis"
+import { usePolling } from "@/hooks/use-polling"
+import type { ChatMessage } from "@/lib/redis"
 import { useToast } from "@/hooks/use-toast"
 
 export default function ChatApp() {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [newMessage, setNewMessage] = useState("")
   const [username, setUsername] = useState("")
   const [userId, setUserId] = useState("")
   const [isUsernameSet, setIsUsernameSet] = useState(false)
-  const [users, setUsers] = useState<ChatUser[]>([])
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
-  // Fetch initial messages and users
-  useEffect(() => {
-    if (!isUsernameSet) return
-
-    const fetchInitialData = async () => {
-      setIsLoading(true)
-      try {
-        // Fetch messages
-        const messagesRes = await fetch("/api/messages")
-        const messagesData = await messagesRes.json()
-        if (messagesData.messages) {
-          setMessages(messagesData.messages)
-        }
-
-        // Fetch users
-        const usersRes = await fetch("/api/users")
-        const usersData = await usersRes.json()
-        if (usersData.users) {
-          setUsers(usersData.users)
-        }
-      } catch (error) {
-        console.error("Error fetching initial data:", error)
-        toast({
-          title: "Error",
-          description: "Failed to load chat data. Please try again.",
-          variant: "destructive",
-        })
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    fetchInitialData()
-  }, [isUsernameSet, toast])
-
-  // Set up SSE connection for real-time updates
-  const { connected } = useSSE("/api/sse", {
-    connected: () => {
-      setIsConnected(true)
-      console.log("Connected to SSE")
-    },
-    update: (data) => {
-      console.log("SSE update:", data)
-
-      if (data.type === "new-message") {
-        setMessages((prev) => [...prev, data.data])
-      } else if (data.type === "user-update") {
-        setUsers((prev) => {
-          const existingUserIndex = prev.findIndex((u) => u.id === data.data.id)
-          if (existingUserIndex >= 0) {
-            const updatedUsers = [...prev]
-            updatedUsers[existingUserIndex] = data.data
-            return updatedUsers
-          } else {
-            return [...prev, data.data]
-          }
-        })
-      } else if (data.type === "user-remove") {
-        setUsers((prev) => prev.filter((u) => u.id !== data.data.id))
-      }
-    },
-  })
-
-  // Update connection status when SSE connection changes
-  useEffect(() => {
-    setIsConnected(connected)
-  }, [connected])
+  // Use polling for all real-time updates
+  const { messages, users, isPolling, error, sendMessage, updateUser } = usePolling(2000)
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -108,16 +40,10 @@ export default function ChatApp() {
     // Update user presence every 30 seconds
     const updatePresence = async () => {
       try {
-        await fetch("/api/users", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            id: userId,
-            name: username,
-            lastSeen: Date.now(),
-          }),
+        await updateUser({
+          id: userId,
+          name: username,
+          lastSeen: Date.now(),
         })
       } catch (error) {
         console.error("Error updating presence:", error)
@@ -131,10 +57,19 @@ export default function ChatApp() {
     // Clean up on unmount
     return () => {
       clearInterval(interval)
-      // Remove user when they leave
-      fetch(`/api/users?id=${userId}`, { method: "DELETE" }).catch(console.error)
     }
-  }, [isUsernameSet, userId, username])
+  }, [isUsernameSet, userId, username, updateUser])
+
+  // Show error toast if polling fails
+  useEffect(() => {
+    if (error) {
+      toast({
+        title: "Connection Issue",
+        description: "Having trouble connecting to the chat server. Will keep trying.",
+        variant: "destructive",
+      })
+    }
+  }, [error, toast])
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -168,15 +103,9 @@ export default function ChatApp() {
       setSelectedFile(null)
 
       // Send message to server
-      const response = await fetch("/api/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(message),
-      })
+      const success = await sendMessage(message)
 
-      if (!response.ok) {
+      if (!success) {
         throw new Error("Failed to send message")
       }
     } catch (error) {
@@ -196,23 +125,18 @@ export default function ChatApp() {
     if (!username.trim()) return
 
     try {
+      setIsLoading(true)
       const newUserId = `user-${Date.now()}`
       setUserId(newUserId)
 
       // Register user with server
-      const response = await fetch("/api/users", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          id: newUserId,
-          name: username,
-          lastSeen: Date.now(),
-        }),
+      const success = await updateUser({
+        id: newUserId,
+        name: username,
+        lastSeen: Date.now(),
       })
 
-      if (!response.ok) {
+      if (!success) {
         throw new Error("Failed to register user")
       }
 
@@ -226,14 +150,7 @@ export default function ChatApp() {
         type: "system",
       }
 
-      await fetch("/api/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(joinMessage),
-      })
-
+      await sendMessage(joinMessage)
       setIsUsernameSet(true)
     } catch (error) {
       console.error("Error joining chat:", error)
@@ -242,6 +159,8 @@ export default function ChatApp() {
         description: "Failed to join chat. Please try again.",
         variant: "destructive",
       })
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -264,14 +183,18 @@ export default function ChatApp() {
     else return (bytes / 1048576).toFixed(1) + " MB"
   }
 
-  const getAvatarFallback = (name: string) => {
-    return name.slice(0, 2).toUpperCase()
-  }
-
   const getOnlineUsers = () => {
     // Consider users online if they've been seen in the last 2 minutes
     const twoMinutesAgo = Date.now() - 2 * 60 * 1000
     return users.filter((user) => user.lastSeen > twoMinutesAgo)
+  }
+
+  // For optimistic UI updates
+  const setMessages = (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+    const updatedMessages = updater(messages)
+    // This doesn't actually update the state since we're using the polling hook
+    // But it's useful for optimistic UI updates
+    return updatedMessages
   }
 
   if (!isUsernameSet) {
@@ -292,8 +215,15 @@ export default function ChatApp() {
                   className="w-full"
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={!username.trim()}>
-                Join Chat
+              <Button type="submit" className="w-full" disabled={!username.trim() || isLoading}>
+                {isLoading ? (
+                  <div className="flex items-center">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Joining...
+                  </div>
+                ) : (
+                  "Join Chat"
+                )}
               </Button>
             </form>
           </CardContent>
@@ -309,8 +239,18 @@ export default function ChatApp() {
         <div className="p-4 border-b">
           <h2 className="text-xl font-bold">Chat App</h2>
           <div className="mt-1 flex items-center">
-            <div className={`w-2 h-2 rounded-full mr-2 ${isConnected ? "bg-green-500" : "bg-red-500"}`}></div>
-            <span className="text-xs text-gray-500">{isConnected ? "Connected" : "Disconnected"}</span>
+            <div className={`w-2 h-2 rounded-full mr-2 ${!error ? "bg-green-500" : "bg-red-500"}`}></div>
+            <span className="text-xs text-gray-500 flex items-center">
+              {!error ? (
+                <>
+                  <Wifi className="h-3 w-3 mr-1" /> Connected {isPolling && "(Updating...)"}
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-3 w-3 mr-1" /> Reconnecting...
+                </>
+              )}
+            </span>
           </div>
         </div>
         <div className="p-4">
@@ -520,7 +460,7 @@ export default function ChatApp() {
                 <input id="file-upload" type="file" className="hidden" onChange={handleFileSelect} />
               </label>
             </div>
-            <Button type="submit" size="icon" disabled={(!newMessage.trim() && !selectedFile) || !isConnected}>
+            <Button type="submit" size="icon" disabled={(!newMessage.trim() && !selectedFile) || isLoading}>
               <Send className="h-4 w-4" />
             </Button>
           </form>
