@@ -9,88 +9,24 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Send, Users, Wifi, WifiOff, Clock, UserCircle } from "lucide-react"
+import { Send, Users, Wifi, WifiOff, Clock } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { usePolling } from "@/hooks/use-polling"
 import type { ChatMessage } from "@/lib/redis"
 import { useToast } from "@/hooks/use-toast"
 
-interface User {
-  id: string
-  username: string
-}
-
 export default function ChatApp() {
   const [newMessage, setNewMessage] = useState("")
   const [username, setUsername] = useState("")
   const [userId, setUserId] = useState("")
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [isLoading, setIsLoading] = useState(true)
+  const [isUsernameSet, setIsUsernameSet] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [isRegistering, setIsRegistering] = useState(false)
-  const [authError, setAuthError] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
   // Use polling for all real-time updates
   const { messages, users, isPolling, error, sendMessage, updateUser } = usePolling(2000)
-
-  // Check if user is already logged in
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        console.log("Checking authentication status...")
-        setAuthError(null)
-
-        const response = await fetch("/api/auth")
-        if (!response.ok) {
-          throw new Error(`Auth check failed: ${response.status}`)
-        }
-
-        const data = await response.json()
-        console.log("Auth check response:", data)
-
-        if (data.loggedIn && data.user) {
-          console.log("User is logged in:", data.user)
-          // User is already logged in
-          setUserId(data.user.id)
-          setUsername(data.user.username)
-          setIsLoggedIn(true)
-
-          // Update user presence
-          await updateUser({
-            id: data.user.id,
-            name: data.user.username,
-            lastSeen: Date.now(),
-          })
-
-          // Add system message that user has joined (if not already in the chat)
-          if (!users.some((user) => user.id === data.user.id)) {
-            const joinMessage: ChatMessage = {
-              id: Date.now().toString(),
-              content: `${data.user.username} has joined the chat`,
-              sender: "System",
-              senderId: "system",
-              timestamp: Date.now(),
-              type: "system",
-            }
-            await sendMessage(joinMessage)
-          }
-        } else {
-          console.log("User is not logged in")
-          setIsLoggedIn(false)
-        }
-      } catch (error) {
-        console.error("Error checking auth status:", error)
-        setAuthError(error instanceof Error ? error.message : "Failed to check login status")
-        setIsLoggedIn(false)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    checkAuth()
-  }, [])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -99,7 +35,7 @@ export default function ChatApp() {
 
   // Keep user presence updated
   useEffect(() => {
-    if (!isLoggedIn || !userId) return
+    if (!isUsernameSet || !userId) return
 
     // Update user presence every 30 seconds
     const updatePresence = async () => {
@@ -122,7 +58,7 @@ export default function ChatApp() {
     return () => {
       clearInterval(interval)
     }
-  }, [isLoggedIn, userId, username, updateUser])
+  }, [isUsernameSet, userId, username, updateUser])
 
   // Show error toast if polling fails
   useEffect(() => {
@@ -184,44 +120,30 @@ export default function ChatApp() {
     }
   }
 
-  const handleRegister = async (e: React.FormEvent) => {
+  const handleSetUsername = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim()) return
 
     try {
-      setIsRegistering(true)
-      setAuthError(null)
+      setIsLoading(true)
+      const newUserId = `user-${Date.now()}`
+      setUserId(newUserId)
 
-      console.log("Registering user:", username)
-
-      const response = await fetch("/api/auth", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ username }),
+      // Register user with server
+      const success = await updateUser({
+        id: newUserId,
+        name: username,
+        lastSeen: Date.now(),
       })
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`Registration failed: ${response.status} - ${errorText}`)
+      if (!success) {
+        throw new Error("Failed to register user")
       }
-
-      const data = await response.json()
-      console.log("Registration response:", data)
-
-      if (!data.success) {
-        throw new Error(data.error || "Failed to register")
-      }
-
-      setUserId(data.user.id)
-      setUsername(data.user.username)
-      setIsLoggedIn(true)
 
       // Add system message that user has joined
       const joinMessage: ChatMessage = {
         id: Date.now().toString(),
-        content: `${data.user.username} has joined the chat`,
+        content: `${username} has joined the chat`,
         sender: "System",
         senderId: "system",
         timestamp: Date.now(),
@@ -229,28 +151,16 @@ export default function ChatApp() {
       }
 
       await sendMessage(joinMessage)
-
-      // Update user presence
-      await updateUser({
-        id: data.user.id,
-        name: data.user.username,
-        lastSeen: Date.now(),
-      })
-
-      toast({
-        title: "Welcome!",
-        description: "You've successfully joined the chat.",
-      })
+      setIsUsernameSet(true)
     } catch (error) {
-      console.error("Error registering:", error)
-      setAuthError(error instanceof Error ? error.message : "Failed to register. Please try again.")
+      console.error("Error joining chat:", error)
       toast({
-        title: "Registration Failed",
-        description: error instanceof Error ? error.message : "Failed to register. Please try again.",
+        title: "Error",
+        description: "Failed to join chat. Please try again.",
         variant: "destructive",
       })
     } finally {
-      setIsRegistering(false)
+      setIsLoading(false)
     }
   }
 
@@ -305,15 +215,7 @@ export default function ChatApp() {
     return `Expires in 1 hour`
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
-      </div>
-    )
-  }
-
-  if (!isLoggedIn) {
+  if (!isUsernameSet) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
         <Card className="w-full max-w-md">
@@ -321,42 +223,28 @@ export default function ChatApp() {
             <CardTitle className="text-center">Join the Chat</CardTitle>
           </CardHeader>
           <CardContent>
-            {authError && (
-              <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-md text-sm">
-                <p className="font-medium">Error</p>
-                <p>{authError}</p>
-              </div>
-            )}
-            <form onSubmit={handleRegister} className="space-y-4">
+            <form onSubmit={handleSetUsername} className="space-y-4">
               <div className="space-y-2">
                 <Input
                   type="text"
-                  placeholder="Choose a username"
+                  placeholder="Enter your username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full"
-                  minLength={3}
-                  maxLength={20}
-                  required
                 />
-                <p className="text-xs text-gray-500">Username must be between 3 and 20 characters</p>
-              </div>
-              <div className="text-xs text-gray-500 text-center">
-                <UserCircle className="inline-block h-3 w-3 mr-1" />
-                Your account will be linked to your IP address for automatic login
               </div>
               <div className="text-xs text-gray-500 text-center">
                 <Clock className="inline-block h-3 w-3 mr-1" />
                 Messages in this chat expire after 1 hour
               </div>
-              <Button type="submit" className="w-full" disabled={!username.trim() || isRegistering}>
-                {isRegistering ? (
+              <Button type="submit" className="w-full" disabled={!username.trim() || isLoading}>
+                {isLoading ? (
                   <div className="flex items-center">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    Creating Account...
+                    Joining...
                   </div>
                 ) : (
-                  "Create Account & Join Chat"
+                  "Join Chat"
                 )}
               </Button>
             </form>
@@ -388,9 +276,6 @@ export default function ChatApp() {
           </div>
           <div className="mt-1 text-xs text-gray-500 flex items-center">
             <Clock className="h-3 w-3 mr-1" /> Messages expire after 1 hour
-          </div>
-          <div className="mt-1 text-xs text-gray-500 flex items-center">
-            <UserCircle className="h-3 w-3 mr-1" /> Logged in as {username}
           </div>
         </div>
         <div className="p-4">
@@ -425,9 +310,6 @@ export default function ChatApp() {
           </div>
           <div className="flex items-center">
             <div className="text-xs text-gray-500 mr-4 hidden sm:flex items-center">
-              <UserCircle className="h-3 w-3 mr-1" /> {username}
-            </div>
-            <div className="text-xs text-gray-500 mr-4 hidden sm:flex items-center">
               <Clock className="h-3 w-3 mr-1" /> Messages expire after 1 hour
             </div>
             <div className="md:hidden">
@@ -438,9 +320,6 @@ export default function ChatApp() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem disabled className="text-xs text-gray-500">
-                    Logged in as {username}
-                  </DropdownMenuItem>
                   <DropdownMenuItem disabled className="text-xs text-gray-500">
                     Online Users ({getOnlineUsers().length})
                   </DropdownMenuItem>

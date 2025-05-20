@@ -26,20 +26,9 @@ export interface ChatUser {
   lastSeen: number
 }
 
-// User account structure
-export interface UserAccount {
-  id: string
-  username: string
-  ipAddress: string
-  createdAt: number
-  lastLogin: number
-}
-
 // Redis keys
 const MESSAGES_KEY = "chat:messages"
 const USERS_KEY = "chat:users"
-const ACCOUNTS_KEY = "chat:accounts"
-const IP_TO_USER_KEY = "chat:ip_to_user"
 
 // Get all messages (only from the last hour)
 export async function getMessages(): Promise<ChatMessage[]> {
@@ -248,113 +237,5 @@ export async function cleanupUsers(maxAgeMs: number = 5 * 60 * 1000): Promise<vo
     }
   } catch (error) {
     console.error("Error cleaning up users:", error)
-  }
-}
-
-// User account functions
-
-// Create a new user account
-export async function createUserAccount(username: string, ipAddress: string): Promise<UserAccount | null> {
-  try {
-    console.log("Creating user account:", username, ipAddress)
-
-    // Check if username is already taken
-    const existingAccounts = await getUserAccounts()
-    if (existingAccounts.some((account) => account.username.toLowerCase() === username.toLowerCase())) {
-      console.log("Username already taken:", username)
-      return null // Username already taken
-    }
-
-    const userId = `user-${Date.now()}`
-    const account: UserAccount = {
-      id: userId,
-      username,
-      ipAddress,
-      createdAt: Date.now(),
-      lastLogin: Date.now(),
-    }
-
-    // Store the account in Redis
-    await redis.hset(ACCOUNTS_KEY, {
-      [userId]: JSON.stringify(account),
-    })
-
-    // Map IP address to user ID
-    await redis.hset(IP_TO_USER_KEY, {
-      [ipAddress]: userId,
-    })
-
-    console.log("Account created successfully:", account)
-    return account
-  } catch (error) {
-    console.error("Error creating user account:", error)
-    return null
-  }
-}
-
-// Get user account by IP address
-export async function getUserByIp(ipAddress: string): Promise<UserAccount | null> {
-  try {
-    console.log("Looking up user by IP:", ipAddress)
-
-    // Get user ID from IP mapping
-    const userId = await redis.hget(IP_TO_USER_KEY, ipAddress)
-    console.log("User ID found for IP:", userId)
-
-    if (!userId) {
-      console.log("No user found for IP:", ipAddress)
-      return null // No user found for this IP
-    }
-
-    // Get user account
-    const accountData = await redis.hget(ACCOUNTS_KEY, userId)
-    console.log("Account data found:", accountData)
-
-    if (!accountData) {
-      console.log("Account not found for user ID:", userId)
-      return null // Account not found
-    }
-
-    try {
-      const account = JSON.parse(accountData as string) as UserAccount
-
-      // Update last login time
-      account.lastLogin = Date.now()
-      await redis.hset(ACCOUNTS_KEY, {
-        [userId]: JSON.stringify(account),
-      })
-
-      console.log("User found and last login updated:", account)
-      return account
-    } catch (e) {
-      console.error("Error parsing account data:", e)
-      return null
-    }
-  } catch (error) {
-    console.error("Error getting user by IP:", error)
-    return null
-  }
-}
-
-// Get all user accounts
-export async function getUserAccounts(): Promise<UserAccount[]> {
-  try {
-    const accounts = await redis.hgetall(ACCOUNTS_KEY)
-
-    if (!accounts) return []
-
-    return Object.values(accounts)
-      .map((accountData) => {
-        try {
-          return JSON.parse(accountData as string) as UserAccount
-        } catch (e) {
-          console.error("Error parsing account data:", e)
-          return null
-        }
-      })
-      .filter((account): account is UserAccount => account !== null)
-  } catch (error) {
-    console.error("Error fetching user accounts:", error)
-    return []
   }
 }
