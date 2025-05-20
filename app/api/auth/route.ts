@@ -16,14 +16,18 @@ function getClientIp(request: NextRequest): string {
   }
 
   // Fallback to a placeholder IP if we can't determine the real one
-  return "127.0.0.1"
+  // In development, we'll use a consistent IP so auto-login works
+  return process.env.NODE_ENV === "development" ? "127.0.0.1" : request.ip || "127.0.0.1"
 }
 
 // GET handler to check if user is logged in
 export async function GET(request: NextRequest) {
   try {
     const ipAddress = getClientIp(request)
+    console.log("Checking auth for IP:", ipAddress)
+
     const user = await getUserByIp(ipAddress)
+    console.log("User found for IP:", user)
 
     if (user) {
       // User found, return user data
@@ -40,7 +44,7 @@ export async function GET(request: NextRequest) {
     }
   } catch (error) {
     console.error("Error checking auth status:", error)
-    return NextResponse.json({ error: "Failed to check auth status" }, { status: 500 })
+    return NextResponse.json({ loggedIn: false, error: "Failed to check auth status" })
   }
 }
 
@@ -49,10 +53,12 @@ export async function POST(request: NextRequest) {
   try {
     const { username } = await request.json()
     const ipAddress = getClientIp(request)
+    console.log("Registering user for IP:", ipAddress, "Username:", username)
 
     // Check if user already exists for this IP
     const existingUser = await getUserByIp(ipAddress)
     if (existingUser) {
+      console.log("User already exists for this IP:", existingUser)
       return NextResponse.json({
         success: true,
         user: {
@@ -76,6 +82,8 @@ export async function POST(request: NextRequest) {
 
     // Create new user account
     const newUser = await createUserAccount(username, ipAddress)
+    console.log("Created new user:", newUser)
+
     if (!newUser) {
       return NextResponse.json(
         {
@@ -95,6 +103,6 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("Error registering user:", error)
-    return NextResponse.json({ error: "Failed to register user" }, { status: 500 })
+    return NextResponse.json({ success: false, error: "Failed to register user" }, { status: 500 })
   }
 }

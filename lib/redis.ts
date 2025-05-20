@@ -256,9 +256,12 @@ export async function cleanupUsers(maxAgeMs: number = 5 * 60 * 1000): Promise<vo
 // Create a new user account
 export async function createUserAccount(username: string, ipAddress: string): Promise<UserAccount | null> {
   try {
+    console.log("Creating user account:", username, ipAddress)
+
     // Check if username is already taken
     const existingAccounts = await getUserAccounts()
     if (existingAccounts.some((account) => account.username.toLowerCase() === username.toLowerCase())) {
+      console.log("Username already taken:", username)
       return null // Username already taken
     }
 
@@ -281,6 +284,7 @@ export async function createUserAccount(username: string, ipAddress: string): Pr
       [ipAddress]: userId,
     })
 
+    console.log("Account created successfully:", account)
     return account
   } catch (error) {
     console.error("Error creating user account:", error)
@@ -291,15 +295,23 @@ export async function createUserAccount(username: string, ipAddress: string): Pr
 // Get user account by IP address
 export async function getUserByIp(ipAddress: string): Promise<UserAccount | null> {
   try {
+    console.log("Looking up user by IP:", ipAddress)
+
     // Get user ID from IP mapping
     const userId = await redis.hget(IP_TO_USER_KEY, ipAddress)
+    console.log("User ID found for IP:", userId)
+
     if (!userId) {
+      console.log("No user found for IP:", ipAddress)
       return null // No user found for this IP
     }
 
     // Get user account
     const accountData = await redis.hget(ACCOUNTS_KEY, userId)
+    console.log("Account data found:", accountData)
+
     if (!accountData) {
+      console.log("Account not found for user ID:", userId)
       return null // Account not found
     }
 
@@ -312,6 +324,7 @@ export async function getUserByIp(ipAddress: string): Promise<UserAccount | null
         [userId]: JSON.stringify(account),
       })
 
+      console.log("User found and last login updated:", account)
       return account
     } catch (e) {
       console.error("Error parsing account data:", e)

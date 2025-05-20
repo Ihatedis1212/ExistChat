@@ -28,6 +28,7 @@ export default function ChatApp() {
   const [isLoading, setIsLoading] = useState(true)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isRegistering, setIsRegistering] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
@@ -38,10 +39,19 @@ export default function ChatApp() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const response = await fetch("/api/auth")
-        const data = await response.json()
+        console.log("Checking authentication status...")
+        setAuthError(null)
 
-        if (data.loggedIn) {
+        const response = await fetch("/api/auth")
+        if (!response.ok) {
+          throw new Error(`Auth check failed: ${response.status}`)
+        }
+
+        const data = await response.json()
+        console.log("Auth check response:", data)
+
+        if (data.loggedIn && data.user) {
+          console.log("User is logged in:", data.user)
           // User is already logged in
           setUserId(data.user.id)
           setUsername(data.user.username)
@@ -66,11 +76,15 @@ export default function ChatApp() {
             }
             await sendMessage(joinMessage)
           }
+        } else {
+          console.log("User is not logged in")
+          setIsLoggedIn(false)
         }
-
-        setIsLoading(false)
       } catch (error) {
         console.error("Error checking auth status:", error)
+        setAuthError(error instanceof Error ? error.message : "Failed to check login status")
+        setIsLoggedIn(false)
+      } finally {
         setIsLoading(false)
       }
     }
@@ -176,6 +190,9 @@ export default function ChatApp() {
 
     try {
       setIsRegistering(true)
+      setAuthError(null)
+
+      console.log("Registering user:", username)
 
       const response = await fetch("/api/auth", {
         method: "POST",
@@ -185,7 +202,13 @@ export default function ChatApp() {
         body: JSON.stringify({ username }),
       })
 
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Registration failed: ${response.status} - ${errorText}`)
+      }
+
       const data = await response.json()
+      console.log("Registration response:", data)
 
       if (!data.success) {
         throw new Error(data.error || "Failed to register")
@@ -213,10 +236,16 @@ export default function ChatApp() {
         name: data.user.username,
         lastSeen: Date.now(),
       })
+
+      toast({
+        title: "Welcome!",
+        description: "You've successfully joined the chat.",
+      })
     } catch (error) {
       console.error("Error registering:", error)
+      setAuthError(error instanceof Error ? error.message : "Failed to register. Please try again.")
       toast({
-        title: "Error",
+        title: "Registration Failed",
         description: error instanceof Error ? error.message : "Failed to register. Please try again.",
         variant: "destructive",
       })
@@ -292,6 +321,12 @@ export default function ChatApp() {
             <CardTitle className="text-center">Join the Chat</CardTitle>
           </CardHeader>
           <CardContent>
+            {authError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-md text-sm">
+                <p className="font-medium">Error</p>
+                <p>{authError}</p>
+              </div>
+            )}
             <form onSubmit={handleRegister} className="space-y-4">
               <div className="space-y-2">
                 <Input
