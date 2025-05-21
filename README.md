@@ -5,3 +5,5 @@
 ExistChat is a simple chatroom that you can use at anytime!
 
 Application version coming soon.
+
+Completly open source.
